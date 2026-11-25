@@ -1,0 +1,1 @@
+const fs=require('fs');const icons=JSON.parse(fs.readFileSync('icons.json','utf8'));for(const [name,b64] of Object.entries(icons)){fs.writeFileSync(name,Buffer.from(b64,'base64'));console.log('wrote',name)}
