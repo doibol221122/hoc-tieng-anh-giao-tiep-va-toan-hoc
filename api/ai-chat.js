@@ -1,5 +1,5 @@
 // AI endpoint for Emma. API keys live only in Vercel environment
-// variables (GROQ_API_KEY / CEREBRAS_API_KEY / OPENROUTER_API_KEY / SAMBANOVA_API_KEY / GEMINI_API_KEY); never sent to the browser.
+// variables (GROQ_API_KEY / CEREBRAS_API_KEY / OPENROUTER_API_KEY / SAMBANOVA_API_KEY / CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN / GEMINI_API_KEY); never sent to the browser.
 const hits = new Map();
 const MODEL_CACHE_MS = 10 * 60 * 1000;
 let modelCache = { at: 0, candidates: [], working: null, bad: {} };
@@ -205,20 +205,30 @@ async function trySambaNova(sambaNovaKey, systemText, history, message, cfg, mod
   return tryOpenAIProvider('SambaNova', 'https://api.sambanova.ai/v1/chat/completions', sambaNovaKey, models, systemText, history, message, cfg, mode, statuses);
 }
 
+
+async function tryCloudflare(accountId, apiToken, systemText, history, message, cfg, mode, statuses) {
+  const models = [...new Set([process.env.CLOUDFLARE_MODEL, '@cf/google/gemma-4-26b-a4b-it', '@cf/zai-org/glm-4.7-flash', '@cf/meta/llama-3.2-3b-instruct'].filter(Boolean))];
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/chat/completions`;
+  return tryOpenAIProvider('Cloudflare', url, apiToken, models, systemText, history, message, cfg, mode, statuses, {}, 9000);
+}
+
 module.exports = async (req, res) => {
   const key = (process.env.GEMINI_API_KEY || '').trim();
   const groqKey = (process.env.GROQ_API_KEY || '').trim();
   const cerebrasKey = (process.env.CEREBRAS_API_KEY || '').trim();
   const openRouterKey = (process.env.OPENROUTER_API_KEY || '').trim();
   const sambaNovaKey = (process.env.SAMBANOVA_API_KEY || '').trim();
+  const cloudflareAccountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
+  const cloudflareToken = (process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY || '').trim();
+  const cloudflareReady = !!(cloudflareAccountId && cloudflareToken);
   if (req.method === 'GET') {
-    return res.status(200).json({ enabled: !!(key || groqKey || cerebrasKey || openRouterKey || sambaNovaKey), model: lastWorkingModel || modelCache.working || null });
+    return res.status(200).json({ enabled: !!(key || groqKey || cerebrasKey || openRouterKey || sambaNovaKey || cloudflareReady), model: lastWorkingModel || modelCache.working || null });
   }
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
-  if (!key && !groqKey && !cerebrasKey && !openRouterKey && !sambaNovaKey) {
-    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt OPENROUTER_API_KEY, SAMBANOVA_API_KEY, CEREBRAS_API_KEY, GROQ_API_KEY hoặc GEMINI_API_KEY trong Vercel.' });
+  if (!key && !groqKey && !cerebrasKey && !openRouterKey && !sambaNovaKey && !cloudflareReady) {
+    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt OPENROUTER_API_KEY, SAMBANOVA_API_KEY, CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN, CEREBRAS_API_KEY, GROQ_API_KEY hoặc GEMINI_API_KEY trong Vercel.' });
   }
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   if (rateLimited(ip)) {
@@ -265,7 +275,11 @@ module.exports = async (req, res) => {
     const sambaNovaResult = await trySambaNova(sambaNovaKey, systemText, history, message, cfg, mode, statuses);
     if (sambaNovaResult) return res.status(200).json(sambaNovaResult);
   }
-  if (!key && (groqKey || cerebrasKey || openRouterKey || sambaNovaKey)) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
+  if (cloudflareReady) {
+    const cloudflareResult = await tryCloudflare(cloudflareAccountId, cloudflareToken, systemText, history, message, cfg, mode, statuses);
+    if (cloudflareResult) return res.status(200).json(cloudflareResult);
+  }
+  if (!key && (groqKey || cerebrasKey || openRouterKey || sambaNovaKey || cloudflareReady)) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
   const attempted = new Set();
   const tryCandidates = async (candidates) => {
     for (const model of candidates) {
