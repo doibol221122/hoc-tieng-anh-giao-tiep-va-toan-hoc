@@ -7,22 +7,22 @@ let modelCache = { at: 0, candidates: [], working: null, bad: {} };
 const MODES = {
   chat: {
     temperature: 0.35,
-    maxOutputTokens: 90,
+    maxOutputTokens: 500,
     instruction: 'Reply in English only, in 1-2 very short A1 sentences. Correct mistakes gently. Ask one simple question when it fits.',
   },
   correct: {
     temperature: 0.2,
-    maxOutputTokens: 150,
+    maxOutputTokens: 600,
     instruction: 'Correct the learner sentence. Output exactly two short lines: "Say: <correct English>" and "Why: <very short Vietnamese reason>". If it is already correct, repeat it after Say and write "Why: Câu này đúng rồi."',
   },
   explain: {
     temperature: 0.25,
-    maxOutputTokens: 170,
+    maxOutputTokens: 700,
     instruction: 'Explain the word or sentence for a Vietnamese A1 learner. Output three short lines: "Meaning: <Vietnamese meaning>", "Example: <simple English example>", "Say: <short English to repeat>".',
   },
   quiz: {
     temperature: 0.5,
-    maxOutputTokens: 190,
+    maxOutputTokens: 800,
     instruction: 'Make one very easy A1 English or math-English quiz from the learner topic. Output three short lines: "Question: ...", "A. ... B. ... C. ...", "Answer: ...".',
   },
 };
@@ -159,6 +159,7 @@ module.exports = async (req, res) => {
       temperature: cfg.temperature,
       topP: 0.9,
       maxOutputTokens: cfg.maxOutputTokens,
+      thinkingConfig: { thinkingBudget: 0 },
     },
   };
 
@@ -169,11 +170,17 @@ module.exports = async (req, res) => {
       if (attempted.has(model)) continue;
       attempted.add(model);
       try {
-        const upstream = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        const call = (body) => fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(body),
         }, 7000);
+        let upstream = await call(payload);
+        if (upstream.status === 400) {
+          const retryPayload = JSON.parse(JSON.stringify(payload));
+          delete retryPayload.generationConfig.thinkingConfig;
+          upstream = await call(retryPayload);
+        }
         if (!upstream.ok) {
           statuses.push(`${model}:${upstream.status}`);
           if (upstream.status === 404 || upstream.status === 400) modelCache.bad[model] = Date.now() + MODEL_CACHE_MS;
