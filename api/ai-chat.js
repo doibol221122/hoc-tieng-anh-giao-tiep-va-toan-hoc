@@ -140,8 +140,10 @@ function buildMessages(history, message, systemText) {
   return messages;
 }
 
-async function tryOpenAIProvider(provider, url, apiKey, models, systemText, history, message, cfg, mode, statuses, extraHeaders = {}, timeoutMs = 6000) {
+async function tryOpenAIProvider(provider, url, apiKey, models, systemText, history, message, cfg, mode, statuses, extraHeaders = {}, timeoutMs = 6000, deadline = Date.now() + 22000) {
   for (const model of models) {
+    const remaining = deadline - Date.now();
+    if (remaining < 1200) { statuses.push(`${provider}:deadline`); break; }
     try {
       const upstream = await fetchWithTimeout(url, {
         method: 'POST',
@@ -153,7 +155,7 @@ async function tryOpenAIProvider(provider, url, apiKey, models, systemText, hist
           top_p: 0.9,
           max_tokens: Math.min(cfg.maxOutputTokens, 240),
         }),
-      }, timeoutMs);
+      }, Math.min(timeoutMs, remaining));
       if (!upstream.ok) { statuses.push(`${provider}:${model}:${upstream.status}`); continue; }
       const data = await upstream.json();
       const reply = String(data.choices?.[0]?.message?.content || '').trim();
@@ -170,18 +172,18 @@ async function tryOpenAIProvider(provider, url, apiKey, models, systemText, hist
 }
 
 
-async function tryGroq(groqKey, systemText, history, message, cfg, mode, statuses) {
+async function tryGroq(groqKey, systemText, history, message, cfg, mode, statuses, deadline) {
   const models = [...new Set([process.env.GROQ_MODEL, 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'].filter(Boolean))];
-  return tryOpenAIProvider('Groq', 'https://api.groq.com/openai/v1/chat/completions', groqKey, models, systemText, history, message, cfg, mode, statuses);
+  return tryOpenAIProvider('Groq', 'https://api.groq.com/openai/v1/chat/completions', groqKey, models, systemText, history, message, cfg, mode, statuses, {}, 5000, deadline);
 }
 
-async function tryCerebras(cerebrasKey, systemText, history, message, cfg, mode, statuses) {
+async function tryCerebras(cerebrasKey, systemText, history, message, cfg, mode, statuses, deadline) {
   const models = [...new Set([process.env.CEREBRAS_MODEL, 'gpt-oss-120b', 'qwen-3.8-27b'].filter(Boolean))];
-  return tryOpenAIProvider('Cerebras', 'https://api.cerebras.ai/v1/chat/completions', cerebrasKey, models, systemText, history, message, cfg, mode, statuses);
+  return tryOpenAIProvider('Cerebras', 'https://api.cerebras.ai/v1/chat/completions', cerebrasKey, models, systemText, history, message, cfg, mode, statuses, {}, 5000, deadline);
 }
 
 
-async function tryOpenRouter(openRouterKey, systemText, history, message, cfg, mode, statuses) {
+async function tryOpenRouter(openRouterKey, systemText, history, message, cfg, mode, statuses, deadline) {
   const models = [...new Set([process.env.OPENROUTER_MODEL, 'meta-llama/llama-3.3-70b-instruct:free', 'openrouter/free'].filter(Boolean))];
   return tryOpenAIProvider(
     'OpenRouter',
@@ -195,21 +197,22 @@ async function tryOpenRouter(openRouterKey, systemText, history, message, cfg, m
     mode,
     statuses,
     { 'HTTP-Referer': 'https://hoc-tieng-anh-giao-tiep-va-toan-hoc.vercel.app', 'X-Title': 'Hoc Tieng Anh Giao Tiep va Toan Hoc' },
-    9000
+    7000,
+    deadline
   );
 }
 
 
-async function trySambaNova(sambaNovaKey, systemText, history, message, cfg, mode, statuses) {
+async function trySambaNova(sambaNovaKey, systemText, history, message, cfg, mode, statuses, deadline) {
   const models = [...new Set([process.env.SAMBANOVA_MODEL, 'gpt-oss-120b', 'gemma-4-31B-it', 'Meta-Llama-3.3-70B-Instruct'].filter(Boolean))];
-  return tryOpenAIProvider('SambaNova', 'https://api.sambanova.ai/v1/chat/completions', sambaNovaKey, models, systemText, history, message, cfg, mode, statuses);
+  return tryOpenAIProvider('SambaNova', 'https://api.sambanova.ai/v1/chat/completions', sambaNovaKey, models, systemText, history, message, cfg, mode, statuses, {}, 5000, deadline);
 }
 
 
-async function tryCloudflare(accountId, apiToken, systemText, history, message, cfg, mode, statuses) {
+async function tryCloudflare(accountId, apiToken, systemText, history, message, cfg, mode, statuses, deadline) {
   const models = [...new Set([process.env.CLOUDFLARE_MODEL, '@cf/google/gemma-4-26b-a4b-it', '@cf/zai-org/glm-4.7-flash', '@cf/meta/llama-3.2-3b-instruct'].filter(Boolean))];
   const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/chat/completions`;
-  return tryOpenAIProvider('Cloudflare', url, apiToken, models, systemText, history, message, cfg, mode, statuses, {}, 9000);
+  return tryOpenAIProvider('Cloudflare', url, apiToken, models, systemText, history, message, cfg, mode, statuses, {}, 7000, deadline);
 }
 
 module.exports = async (req, res) => {
@@ -259,24 +262,25 @@ module.exports = async (req, res) => {
   };
 
   const statuses = [];
+  const deadline = Date.now() + 22000;
   if (groqKey) {
-    const groqResult = await tryGroq(groqKey, systemText, history, message, cfg, mode, statuses);
+    const groqResult = await tryGroq(groqKey, systemText, history, message, cfg, mode, statuses, deadline);
     if (groqResult) return res.status(200).json(groqResult);
   }
   if (cerebrasKey) {
-    const cerebrasResult = await tryCerebras(cerebrasKey, systemText, history, message, cfg, mode, statuses);
+    const cerebrasResult = await tryCerebras(cerebrasKey, systemText, history, message, cfg, mode, statuses, deadline);
     if (cerebrasResult) return res.status(200).json(cerebrasResult);
   }
   if (openRouterKey) {
-    const openRouterResult = await tryOpenRouter(openRouterKey, systemText, history, message, cfg, mode, statuses);
+    const openRouterResult = await tryOpenRouter(openRouterKey, systemText, history, message, cfg, mode, statuses, deadline);
     if (openRouterResult) return res.status(200).json(openRouterResult);
   }
   if (sambaNovaKey) {
-    const sambaNovaResult = await trySambaNova(sambaNovaKey, systemText, history, message, cfg, mode, statuses);
+    const sambaNovaResult = await trySambaNova(sambaNovaKey, systemText, history, message, cfg, mode, statuses, deadline);
     if (sambaNovaResult) return res.status(200).json(sambaNovaResult);
   }
   if (cloudflareReady) {
-    const cloudflareResult = await tryCloudflare(cloudflareAccountId, cloudflareToken, systemText, history, message, cfg, mode, statuses);
+    const cloudflareResult = await tryCloudflare(cloudflareAccountId, cloudflareToken, systemText, history, message, cfg, mode, statuses, deadline);
     if (cloudflareResult) return res.status(200).json(cloudflareResult);
   }
   if (!key && (groqKey || cerebrasKey || openRouterKey || sambaNovaKey || cloudflareReady)) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
@@ -284,13 +288,15 @@ module.exports = async (req, res) => {
   const tryCandidates = async (candidates) => {
     for (const model of candidates) {
       if (attempted.has(model)) continue;
+      const remaining = deadline - Date.now();
+      if (remaining < 1200) { statuses.push('Gemini:deadline'); break; }
       attempted.add(model);
       try {
         const call = (body) => fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
           body: JSON.stringify(body),
-        }, 10000);
+        }, Math.min(8000, remaining));
         let upstream = await call(payload);
         if (upstream.status === 400) {
           const retryPayload = JSON.parse(JSON.stringify(payload));
