@@ -11,7 +11,7 @@ function rateLimited(ip) {
 }
 
 module.exports = async (req, res) => {
-  const key = process.env.GEMINI_API_KEY;
+  const key = (process.env.GEMINI_API_KEY || '').trim();
   if (req.method === 'GET') {
     return res.status(200).json({ enabled: !!key });
   }
@@ -46,7 +46,7 @@ module.exports = async (req, res) => {
 
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   try {
-    const upstream = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    const callModel = (m) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
@@ -54,8 +54,12 @@ module.exports = async (req, res) => {
         generationConfig: { temperature: 0.4, maxOutputTokens: 120 },
       }),
     });
+    let upstream = await callModel(model);
+    if (upstream.status === 404 && model !== 'gemini-2.0-flash') {
+      upstream = await callModel('gemini-2.0-flash');
+    }
     if (!upstream.ok) {
-      return res.status(502).json({ error: 'AI đang bận. Hãy thử lại sau nhé.' });
+      return res.status(502).json({ error: `AI đang bận (mã ${upstream.status}). Hãy thử lại sau nhé.` });
     }
     const data = await upstream.json();
     const reply = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
