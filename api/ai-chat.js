@@ -2,7 +2,7 @@
 // variables (GEMINI_API_KEY); it is never sent to the browser.
 const hits = new Map();
 const MODEL_CACHE_MS = 10 * 60 * 1000;
-let modelCache = { at: 0, candidates: [], working: null };
+let modelCache = { at: 0, candidates: [], working: null, bad: {} };
 
 const MODES = {
   chat: {
@@ -49,8 +49,8 @@ function preferredModels() {
   return [...new Set([
     process.env.GEMINI_MODEL,
     'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
     'gemini-flash-latest',
+    'gemini-2.5-flash-lite',
     'gemini-flash-lite-latest',
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
@@ -74,12 +74,12 @@ async function getCandidates(key, force = false) {
   const now = Date.now();
   const preferred = preferredModels();
   if (!force && modelCache.working && now - modelCache.at < MODEL_CACHE_MS) {
-    return [...new Set([modelCache.working, ...modelCache.candidates])].slice(0, 3);
+    return [...new Set([modelCache.working, ...modelCache.candidates])].filter((m) => !(modelCache.bad[m] > now)).slice(0, 5);
   }
   if (!force && modelCache.candidates.length && now - modelCache.at < MODEL_CACHE_MS) {
-    return modelCache.candidates.slice(0, 3);
+    return modelCache.candidates.filter((m) => !(modelCache.bad[m] > now)).slice(0, 5);
   }
-  let candidates = preferred.slice(0, 4);
+  let candidates = preferred.slice(0, 5);
   try {
     const listRes = await fetchWithTimeout('https://generativelanguage.googleapis.com/v1beta/models', {
       headers: { 'x-goog-api-key': key },
@@ -95,12 +95,12 @@ async function getCandidates(key, force = false) {
         const scored = available
           .filter((m) => !exact.includes(m))
           .sort((a, b) => modelScore(b) - modelScore(a));
-        candidates = [...new Set([...exact, ...scored, ...preferred])].slice(0, 4);
+        candidates = [...new Set([...exact, ...scored, ...preferred])].filter((m) => !(modelCache.bad[m] > now)).slice(0, 5);
       }
     }
   } catch (e) { /* keep preferred candidates */ }
-  modelCache = { at: now, candidates, working: force ? null : modelCache.working };
-  return candidates.slice(0, 3);
+  modelCache = { at: now, candidates, working: force ? null : modelCache.working, bad: modelCache.bad };
+  return candidates.slice(0, 5);
 }
 
 function buildContents(history, message) {
@@ -176,13 +176,16 @@ module.exports = async (req, res) => {
         }, 7000);
         if (!upstream.ok) {
           statuses.push(`${model}:${upstream.status}`);
+          if (upstream.status === 404 || upstream.status === 400) modelCache.bad[model] = Date.now() + MODEL_CACHE_MS;
+          if (upstream.status === 503) modelCache.bad[model] = Date.now() + 60000;
           if (modelCache.working === model && upstream.status === 404) modelCache.working = null;
           continue;
         }
         const data = await upstream.json();
         const reply = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
         if (reply) {
-          modelCache = { at: Date.now(), candidates: modelCache.candidates, working: model };
+          delete modelCache.bad[model];
+          modelCache = { at: Date.now(), candidates: modelCache.candidates, working: model, bad: modelCache.bad };
           return { reply: reply.slice(0, 700), model, mode };
         }
         statuses.push(`${model}:empty`);
