@@ -1,5 +1,5 @@
 // AI endpoint for Emma. API keys live only in Vercel environment
-// variables (GROQ_API_KEY / GEMINI_API_KEY); they are never sent to the browser.
+// variables (GROQ_API_KEY / CEREBRAS_API_KEY / GEMINI_API_KEY); never sent to the browser.
 const hits = new Map();
 const MODEL_CACHE_MS = 10 * 60 * 1000;
 let modelCache = { at: 0, candidates: [], working: null, bad: {} };
@@ -140,13 +140,12 @@ function buildMessages(history, message, systemText) {
   return messages;
 }
 
-async function tryGroq(groqKey, systemText, history, message, cfg, mode, statuses) {
-  const models = [...new Set([process.env.GROQ_MODEL, 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'].filter(Boolean))];
+async function tryOpenAIProvider(provider, url, apiKey, models, systemText, history, message, cfg, mode, statuses) {
   for (const model of models) {
     try {
-      const upstream = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
+      const upstream = await fetchWithTimeout(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model,
           messages: buildMessages(history, message, systemText),
@@ -155,32 +154,44 @@ async function tryGroq(groqKey, systemText, history, message, cfg, mode, statuse
           max_tokens: Math.min(cfg.maxOutputTokens, 240),
         }),
       }, 6000);
-      if (!upstream.ok) { statuses.push(`groq:${model}:${upstream.status}`); continue; }
+      if (!upstream.ok) { statuses.push(`${provider}:${model}:${upstream.status}`); continue; }
       const data = await upstream.json();
       const reply = String(data.choices?.[0]?.message?.content || '').trim();
       if (reply) {
-        lastWorkingModel = `${model} (Groq)`;
+        lastWorkingModel = `${model} (${provider})`;
         return { reply: reply.slice(0, 700), model: lastWorkingModel, mode };
       }
-      statuses.push(`groq:${model}:empty`);
+      statuses.push(`${provider}:${model}:empty`);
     } catch (e) {
-      statuses.push(`groq:${model}:${e && e.name === 'AbortError' ? 'timeout' : 'network'}`);
+      statuses.push(`${provider}:${model}:${e && e.name === 'AbortError' ? 'timeout' : 'network'}`);
     }
   }
   return null;
 }
 
+
+async function tryGroq(groqKey, systemText, history, message, cfg, mode, statuses) {
+  const models = [...new Set([process.env.GROQ_MODEL, 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'].filter(Boolean))];
+  return tryOpenAIProvider('Groq', 'https://api.groq.com/openai/v1/chat/completions', groqKey, models, systemText, history, message, cfg, mode, statuses);
+}
+
+async function tryCerebras(cerebrasKey, systemText, history, message, cfg, mode, statuses) {
+  const models = [...new Set([process.env.CEREBRAS_MODEL, 'gpt-oss-120b', 'qwen-3.8-27b'].filter(Boolean))];
+  return tryOpenAIProvider('Cerebras', 'https://api.cerebras.ai/v1/chat/completions', cerebrasKey, models, systemText, history, message, cfg, mode, statuses);
+}
+
 module.exports = async (req, res) => {
   const key = (process.env.GEMINI_API_KEY || '').trim();
   const groqKey = (process.env.GROQ_API_KEY || '').trim();
+  const cerebrasKey = (process.env.CEREBRAS_API_KEY || '').trim();
   if (req.method === 'GET') {
-    return res.status(200).json({ enabled: !!(key || groqKey), model: lastWorkingModel || modelCache.working || null });
+    return res.status(200).json({ enabled: !!(key || groqKey || cerebrasKey), model: lastWorkingModel || modelCache.working || null });
   }
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
-  if (!key && !groqKey) {
-    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt GROQ_API_KEY hoặc GEMINI_API_KEY trong Vercel.' });
+  if (!key && !groqKey && !cerebrasKey) {
+    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt CEREBRAS_API_KEY, GROQ_API_KEY hoặc GEMINI_API_KEY trong Vercel.' });
   }
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   if (rateLimited(ip)) {
@@ -214,8 +225,12 @@ module.exports = async (req, res) => {
   if (groqKey) {
     const groqResult = await tryGroq(groqKey, systemText, history, message, cfg, mode, statuses);
     if (groqResult) return res.status(200).json(groqResult);
-    if (!key) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
   }
+  if (cerebrasKey) {
+    const cerebrasResult = await tryCerebras(cerebrasKey, systemText, history, message, cfg, mode, statuses);
+    if (cerebrasResult) return res.status(200).json(cerebrasResult);
+  }
+  if (!key && (groqKey || cerebrasKey)) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
   const attempted = new Set();
   const tryCandidates = async (candidates) => {
     for (const model of candidates) {
