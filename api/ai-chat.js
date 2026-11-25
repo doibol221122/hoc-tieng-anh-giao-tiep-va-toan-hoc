@@ -48,6 +48,9 @@ async function fetchWithTimeout(url, options, ms) {
 function preferredModels() {
   return [...new Set([
     process.env.GEMINI_MODEL,
+    'gemini-3.5-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
     'gemini-2.5-flash',
     'gemini-flash-latest',
     'gemini-2.5-flash-lite',
@@ -61,6 +64,7 @@ function preferredModels() {
 function modelScore(name) {
   let score = 0;
   if (name.includes('flash')) score += 10;
+  if (name.includes('3.5') || name.includes('3.8')) score += 5;
   if (name.includes('2.5')) score += 4;
   if (name.includes('latest')) score += 3;
   if (name.includes('2.0')) score += 2;
@@ -89,7 +93,7 @@ async function getCandidates(key, force = false) {
       const available = (listData.models || [])
         .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
         .map((m) => String(m.name || '').replace(/^models\//, ''))
-        .filter(Boolean);
+        .filter((name) => name && !/(image|tts|audio|embedding|veo|imagen|live|robotics|computer-use|preview|exp)/i.test(name));
       if (available.length) {
         const exact = preferred.filter((m) => available.includes(m));
         const scored = available
@@ -174,7 +178,7 @@ module.exports = async (req, res) => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
           body: JSON.stringify(body),
-        }, 7000);
+        }, 10000);
         let upstream = await call(payload);
         if (upstream.status === 400) {
           const retryPayload = JSON.parse(JSON.stringify(payload));
@@ -184,7 +188,7 @@ module.exports = async (req, res) => {
         if (!upstream.ok) {
           statuses.push(`${model}:${upstream.status}`);
           if (upstream.status === 404 || upstream.status === 400) modelCache.bad[model] = Date.now() + MODEL_CACHE_MS;
-          if (upstream.status === 503) modelCache.bad[model] = Date.now() + 60000;
+          if (upstream.status === 503 || upstream.status === 429) modelCache.bad[model] = Date.now() + 60000;
           if (modelCache.working === model && upstream.status === 404) modelCache.working = null;
           continue;
         }
