@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Học tiếng Anh giao tiếp và Toán học</title>
+<link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg"><link rel="apple-touch-icon" href="icon.svg"><meta name="theme-color" content="#0b6b5d"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Học Anh-Toán">
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f4f7f7;color:#123}
 header{background:linear-gradient(135deg,#0b6b5d,#0a4f6e);color:#fff;padding:18px 16px}
@@ -22,7 +23,7 @@ input,select{font-size:16px;padding:10px;border-radius:10px;border:1px solid #cb
 .msg{margin:8px 0}.me{text-align:right}.bubble{display:inline-block;padding:9px 12px;border-radius:14px;background:#eef5f3;max-width:85%}.me .bubble{background:#0b6b5d;color:#fff}
 footer{text-align:center;color:#678;font-size:13px;padding:18px}
 </style></head><body>
-<header><h1>🇬🇧 Học tiếng Anh giao tiếp và Toán học</h1><p>Mức A1 cho người mới bắt đầu • Dễ học, dễ nhớ, áp dụng được • XP: <b id="xp">0</b> • Đã thuộc: <b id="known">0</b> từ</p></header>
+<header><h1>🇬🇧 Học tiếng Anh giao tiếp và Toán học</h1><p>Mức A1 cho người mới bắt đầu • Dễ học, dễ nhớ, áp dụng được • XP: <b id="xp">0</b> • Đã thuộc: <b id="known">0</b> từ</p><p><button id="installBtn" class="btn" style="background:#fff;color:#0b6b5d" hidden>📲 Tải app về điện thoại</button></p></header>
 <div class="wrap">
 <nav id="nav"></nav>
 <main id="main"></main>
@@ -61,4 +62,8 @@ function micChat(){let SR=window.SpeechRecognition||window.webkitSpeechRecogniti
 let mentalAns=0;function newMental(){let a=2+Math.floor(Math.random()*20),b=2+Math.floor(Math.random()*20),ops=[['plus',a+b],['minus',a-b],['times',a*b]];let o=ops[Math.floor(Math.random()*3)];if(o[1]<0){o=['plus',a+b]}mentalAns=o[1];let opts=[...new Set([mentalAns,mentalAns+1,mentalAns-1,mentalAns+2])].sort(()=>Math.random()-.5);let say=`${a} ${o[0]} ${b} equals what?`;document.getElementById('main').innerHTML=`<div class="card"><b>🧮 Tính nhẩm nghe số</b><div class="small">Nghe phép tính rồi chọn kết quả.</div><button class="btn" onclick="speak('${say}')">🔊 Nghe phép tính</button>`+opts.map(x=>`<button class="opt" onclick="ansMental(${x})">${x}</button>`).join('')+`</div>`;setTimeout(()=>speak(say),200)}
 function ansMental(x){if(x===mentalAns){xp+=3;alert('Đúng rồi!')}else alert('Chưa đúng. Kết quả là '+mentalAns);save();newMental()}
 render();
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{})}
+let installPrompt=null;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;document.getElementById('installBtn').hidden=false});
+document.getElementById('installBtn').addEventListener('click',async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;document.getElementById('installBtn').hidden=true}else{alert('Trên điện thoại: mở trình duyệt Chrome/Safari, bấm menu ⋮ hoặc nút Chia sẻ, rồi chọn “Thêm vào màn hình chính” / “Cài đặt ứng dụng”.')}});
+window.addEventListener('appinstalled',()=>{document.getElementById('installBtn').hidden=true});
 </script></body></html>
