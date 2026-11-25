@@ -1,5 +1,5 @@
 // AI endpoint for Emma. API keys live only in Vercel environment
-// variables (GROQ_API_KEY / CEREBRAS_API_KEY / GEMINI_API_KEY); never sent to the browser.
+// variables (GROQ_API_KEY / CEREBRAS_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY); never sent to the browser.
 const hits = new Map();
 const MODEL_CACHE_MS = 10 * 60 * 1000;
 let modelCache = { at: 0, candidates: [], working: null, bad: {} };
@@ -140,12 +140,12 @@ function buildMessages(history, message, systemText) {
   return messages;
 }
 
-async function tryOpenAIProvider(provider, url, apiKey, models, systemText, history, message, cfg, mode, statuses) {
+async function tryOpenAIProvider(provider, url, apiKey, models, systemText, history, message, cfg, mode, statuses, extraHeaders = {}, timeoutMs = 6000) {
   for (const model of models) {
     try {
       const upstream = await fetchWithTimeout(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, ...extraHeaders },
         body: JSON.stringify({
           model,
           messages: buildMessages(history, message, systemText),
@@ -153,7 +153,7 @@ async function tryOpenAIProvider(provider, url, apiKey, models, systemText, hist
           top_p: 0.9,
           max_tokens: Math.min(cfg.maxOutputTokens, 240),
         }),
-      }, 6000);
+      }, timeoutMs);
       if (!upstream.ok) { statuses.push(`${provider}:${model}:${upstream.status}`); continue; }
       const data = await upstream.json();
       const reply = String(data.choices?.[0]?.message?.content || '').trim();
@@ -180,18 +180,38 @@ async function tryCerebras(cerebrasKey, systemText, history, message, cfg, mode,
   return tryOpenAIProvider('Cerebras', 'https://api.cerebras.ai/v1/chat/completions', cerebrasKey, models, systemText, history, message, cfg, mode, statuses);
 }
 
+
+async function tryOpenRouter(openRouterKey, systemText, history, message, cfg, mode, statuses) {
+  const models = [...new Set([process.env.OPENROUTER_MODEL, 'openrouter/free'].filter(Boolean))];
+  return tryOpenAIProvider(
+    'OpenRouter',
+    'https://openrouter.ai/api/v1/chat/completions',
+    openRouterKey,
+    models,
+    systemText,
+    history,
+    message,
+    cfg,
+    mode,
+    statuses,
+    { 'HTTP-Referer': 'https://hoc-tieng-anh-giao-tiep-va-toan-hoc.vercel.app', 'X-Title': 'Hoc Tieng Anh Giao Tiep va Toan Hoc' },
+    9000
+  );
+}
+
 module.exports = async (req, res) => {
   const key = (process.env.GEMINI_API_KEY || '').trim();
   const groqKey = (process.env.GROQ_API_KEY || '').trim();
   const cerebrasKey = (process.env.CEREBRAS_API_KEY || '').trim();
+  const openRouterKey = (process.env.OPENROUTER_API_KEY || '').trim();
   if (req.method === 'GET') {
-    return res.status(200).json({ enabled: !!(key || groqKey || cerebrasKey), model: lastWorkingModel || modelCache.working || null });
+    return res.status(200).json({ enabled: !!(key || groqKey || cerebrasKey || openRouterKey), model: lastWorkingModel || modelCache.working || null });
   }
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
-  if (!key && !groqKey && !cerebrasKey) {
-    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt CEREBRAS_API_KEY, GROQ_API_KEY hoặc GEMINI_API_KEY trong Vercel.' });
+  if (!key && !groqKey && !cerebrasKey && !openRouterKey) {
+    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt OPENROUTER_API_KEY, CEREBRAS_API_KEY, GROQ_API_KEY hoặc GEMINI_API_KEY trong Vercel.' });
   }
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   if (rateLimited(ip)) {
@@ -230,7 +250,11 @@ module.exports = async (req, res) => {
     const cerebrasResult = await tryCerebras(cerebrasKey, systemText, history, message, cfg, mode, statuses);
     if (cerebrasResult) return res.status(200).json(cerebrasResult);
   }
-  if (!key && (groqKey || cerebrasKey)) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
+  if (openRouterKey) {
+    const openRouterResult = await tryOpenRouter(openRouterKey, systemText, history, message, cfg, mode, statuses);
+    if (openRouterResult) return res.status(200).json(openRouterResult);
+  }
+  if (!key && (groqKey || cerebrasKey || openRouterKey)) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
   const attempted = new Set();
   const tryCandidates = async (candidates) => {
     for (const model of candidates) {
