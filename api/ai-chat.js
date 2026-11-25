@@ -1,8 +1,9 @@
-// AI endpoint for Emma. The API key lives only in Vercel environment
-// variables (GEMINI_API_KEY); it is never sent to the browser.
+// AI endpoint for Emma. API keys live only in Vercel environment
+// variables (GROQ_API_KEY / GEMINI_API_KEY); they are never sent to the browser.
 const hits = new Map();
 const MODEL_CACHE_MS = 10 * 60 * 1000;
 let modelCache = { at: 0, candidates: [], working: null, bad: {} };
+let lastWorkingModel = null;
 
 const MODES = {
   chat: {
@@ -128,16 +129,58 @@ function buildContents(history, message) {
   return contents;
 }
 
+
+function buildMessages(history, message, systemText) {
+  const messages = [{ role: 'system', content: systemText }];
+  for (const h of history) {
+    const text = String(h.text || '').slice(0, 300).trim();
+    if (text) messages.push({ role: h.role === 'model' ? 'assistant' : 'user', content: text });
+  }
+  messages.push({ role: 'user', content: message });
+  return messages;
+}
+
+async function tryGroq(groqKey, systemText, history, message, cfg, mode, statuses) {
+  const models = [...new Set([process.env.GROQ_MODEL, 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'].filter(Boolean))];
+  for (const model of models) {
+    try {
+      const upstream = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({
+          model,
+          messages: buildMessages(history, message, systemText),
+          temperature: cfg.temperature,
+          top_p: 0.9,
+          max_tokens: Math.min(cfg.maxOutputTokens, 240),
+        }),
+      }, 6000);
+      if (!upstream.ok) { statuses.push(`groq:${model}:${upstream.status}`); continue; }
+      const data = await upstream.json();
+      const reply = String(data.choices?.[0]?.message?.content || '').trim();
+      if (reply) {
+        lastWorkingModel = `${model} (Groq)`;
+        return { reply: reply.slice(0, 700), model: lastWorkingModel, mode };
+      }
+      statuses.push(`groq:${model}:empty`);
+    } catch (e) {
+      statuses.push(`groq:${model}:${e && e.name === 'AbortError' ? 'timeout' : 'network'}`);
+    }
+  }
+  return null;
+}
+
 module.exports = async (req, res) => {
   const key = (process.env.GEMINI_API_KEY || '').trim();
+  const groqKey = (process.env.GROQ_API_KEY || '').trim();
   if (req.method === 'GET') {
-    return res.status(200).json({ enabled: !!key, model: modelCache.working || null });
+    return res.status(200).json({ enabled: !!(key || groqKey), model: lastWorkingModel || modelCache.working || null });
   }
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
-  if (!key) {
-    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt GEMINI_API_KEY trong Vercel.' });
+  if (!key && !groqKey) {
+    return res.status(503).json({ error: 'AI chưa bật. Hãy đặt GROQ_API_KEY hoặc GEMINI_API_KEY trong Vercel.' });
   }
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   if (rateLimited(ip)) {
@@ -168,6 +211,11 @@ module.exports = async (req, res) => {
   };
 
   const statuses = [];
+  if (groqKey) {
+    const groqResult = await tryGroq(groqKey, systemText, history, message, cfg, mode, statuses);
+    if (groqResult) return res.status(200).json(groqResult);
+    if (!key) return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
+  }
   const attempted = new Set();
   const tryCandidates = async (candidates) => {
     for (const model of candidates) {
@@ -197,6 +245,7 @@ module.exports = async (req, res) => {
         if (reply) {
           delete modelCache.bad[model];
           modelCache = { at: Date.now(), candidates: modelCache.candidates, working: model, bad: modelCache.bad };
+          lastWorkingModel = model;
           return { reply: reply.slice(0, 700), model, mode };
         }
         statuses.push(`${model}:empty`);
