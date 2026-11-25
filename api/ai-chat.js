@@ -44,7 +44,23 @@ module.exports = async (req, res) => {
     'Emma:',
   ].filter(Boolean).join('\n');
 
-  const candidates = [...new Set([process.env.GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'].filter(Boolean))];
+  const preferred = [...new Set([process.env.GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'].filter(Boolean))];
+  let candidates = preferred;
+  try {
+    const listRes = await fetch('https://generativelanguage.googleapis.com/v1beta/models', { headers: { 'x-goog-api-key': key } });
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const available = (listData.models || [])
+        .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map((m) => String(m.name || '').replace(/^models\//, ''))
+        .filter(Boolean);
+      if (available.length) {
+        const ordered = preferred.filter((m) => available.includes(m));
+        const rest = available.filter((m) => !ordered.includes(m)).sort((x, y) => (y.includes('flash') - x.includes('flash')));
+        candidates = [...ordered, ...rest].slice(0, 5);
+      }
+    }
+  } catch (e) { /* keep preferred candidates */ }
   const callModel = (m) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
