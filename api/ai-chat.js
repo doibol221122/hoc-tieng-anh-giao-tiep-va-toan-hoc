@@ -182,7 +182,7 @@ async function tryCerebras(cerebrasKey, systemText, history, message, cfg, mode,
 
 
 async function tryOpenRouter(openRouterKey, systemText, history, message, cfg, mode, statuses) {
-  const models = [...new Set([process.env.OPENROUTER_MODEL, 'openrouter/free'].filter(Boolean))];
+  const models = [...new Set([process.env.OPENROUTER_MODEL, 'meta-llama/llama-3.3-70b-instruct:free', 'openrouter/free'].filter(Boolean))];
   return tryOpenAIProvider(
     'OpenRouter',
     'https://openrouter.ai/api/v1/chat/completions',
