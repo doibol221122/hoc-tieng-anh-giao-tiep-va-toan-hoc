@@ -44,30 +44,27 @@ module.exports = async (req, res) => {
     'Emma:',
   ].filter(Boolean).join('\n');
 
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  try {
-    const callModel = (m) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 120 },
-      }),
-    });
-    let upstream = await callModel(model);
-    if (upstream.status === 404 && model !== 'gemini-2.0-flash') {
-      upstream = await callModel('gemini-2.0-flash');
+  const candidates = [...new Set([process.env.GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'].filter(Boolean))];
+  const callModel = (m) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.4, maxOutputTokens: 120 },
+    }),
+  });
+  const statuses = [];
+  for (const model of candidates) {
+    try {
+      const upstream = await callModel(model);
+      if (!upstream.ok) { statuses.push(`${model}:${upstream.status}`); continue; }
+      const data = await upstream.json();
+      const reply = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+      if (reply) return res.status(200).json({ reply: reply.slice(0, 600), model });
+      statuses.push(`${model}:empty`);
+    } catch (e) {
+      statuses.push(`${model}:network`);
     }
-    if (!upstream.ok) {
-      return res.status(502).json({ error: `AI đang bận (mã ${upstream.status}). Hãy thử lại sau nhé.` });
-    }
-    const data = await upstream.json();
-    const reply = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
-    if (!reply) {
-      return res.status(502).json({ error: 'AI chưa trả lời được. Hãy thử lại nhé.' });
-    }
-    return res.status(200).json({ reply: reply.slice(0, 600) });
-  } catch (e) {
-    return res.status(502).json({ error: 'AI đang bận. Hãy thử lại sau nhé.' });
   }
+  return res.status(502).json({ error: `AI đang bận (${statuses.join(', ')}). Hãy thử lại sau nhé.` });
 };
